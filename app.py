@@ -1,61 +1,79 @@
 import os
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
 import mysql.connector
 
 app = Flask(__name__)
 
-# Twilio Client for Outbound Handshake
-# Ensure these are in Render Environment Variables
-twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
+# This simulates a database table for pending transfers
+# In a real app, this would be a SQL table
+pending_requests = {} 
 
 def get_db_connection():
-    """Establishes a secure SSL connection to Aiven MySQL with Timeout Fix"""
-    return mysql.connector.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        database=os.getenv("DB_NAME"),
-        port=int(os.getenv("DB_PORT", 13197)),
-        ssl_ca="ca.pem",
-        ssl_verify_cert=True,
-        connect_timeout=10  # Stops the "Worker Timeout" crash
-    )
+    try:
+        return mysql.connector.connect(
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME"),
+            port=int(os.getenv("DB_PORT", 16690)),
+            ssl_ca="ca.pem",
+            ssl_verify_cert=True,
+            connect_timeout=10
+        )
+    except:
+        return None
 
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp_reply():
     incoming_raw = request.values.get('Body', '').strip()
     incoming_msg = incoming_raw.lower()
-    # Clean the phone number (removes + and whatsapp: prefix)
     from_number = request.values.get('From', '').replace('whatsapp:', '').replace('+', '')
     
     resp = MessagingResponse()
     
-    try:
-        db = get_db_connection()
-        cursor = db.cursor(dictionary=True)
+    # 1. IDENTIFY USER (Fallback Mode)
+    demo_users = {
+        "917593998816": {"name": "Nandana"},
+        "91XXXXXXXXXX": {"name": "Navomy"} # Add Navomy's real number here
+    }
+    user = demo_users.get(from_number)
 
-        # 1. IDENTIFY USER
-        cursor.execute("SELECT * FROM users WHERE phone_number = %s", (from_number,))
-        user = cursor.fetchone()
-        
-        if not user:
-            # Fallback so you know the connection is working even if DB entry is missing
-            resp.message(f"⚠️ Connection Live! But number {from_number} not found in DB.")
-            db.close()
-            return str(resp)
+    if not user:
+        resp.message(f"Hello! Number ({from_number}) not recognized.")
+        return str(resp)
 
-        # 2. GREETING (If user exists)
-        if incoming_msg in ['hi', 'hello', 'hey']:
-            resp.message(f"Welcome {user['name']}! 🔬\n1. Check Lab Status\n2. Transfer Key")
+    # 2. CHECK FOR PENDING TRANSFER REQUESTS
+    # If someone requested a key FROM this user, they need to 'Yes' or 'No'
+    if from_number in pending_requests and incoming_msg in ['yes', 'no']:
+        requester_name = pending_requests[from_number]['requester_name']
+        if incoming_msg == 'yes':
+            resp.message(f"✅ Transfer Confirmed! You have handed over the key to {requester_name}.")
+            # Here you would normally update the SQL database
         else:
-            resp.message("Please reply with '1' for Lab Status or '2' to Transfer a Key.")
+            resp.message(f"❌ Transfer Cancelled. You still have the key.")
+        
+        del pending_requests[from_number] # Clear the request
+        return str(resp)
 
-        db.close()
-    except Exception as e:
-        # This will text you the EXACT error if the database connection fails
-        resp.message(f"❌ System Error: {str(e)}")
+    # 3. GENERAL MENU LOGIC
+    if incoming_msg in ['hi', 'hello']:
+        resp.message(f"Welcome {user['name']}! 🔬\n1. Check Lab Status\n2. Request Key Transfer")
+
+    elif incoming_msg == '1':
+        resp.message("📍 Lab Status:\nAlgorithm: Available ✅\nSystems: Held by Navomy 🔑")
+
+    elif incoming_msg == '2':
+        # Logic to start a transfer
+        # Example: Nandana wants to take the key from Navomy
+        target_number = "91XXXXXXXXXX" # Navomy's Number
+        pending_requests[target_number] = {'requester_name': user['name']}
+        
+        resp.message(f"⏳ Request sent to Navomy. Please wait for her to reply 'YES' to confirm.")
+        # Note: In a real app, you would use twilio_client.messages.create to notify Navomy
+        
+    else:
+        resp.message("Please reply with '1' or '2'. If you have a pending request, reply 'YES' or 'NO'.")
         
     return str(resp)
 
