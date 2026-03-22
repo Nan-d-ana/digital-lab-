@@ -6,10 +6,18 @@ import mysql.connector
 app = Flask(__name__)
 
 # This simulates a database table for pending transfers
-# In a real app, this would be a SQL table
 pending_requests = {} 
 
+# Temporary lab status for demo purposes
+lab_status = {
+    "Algorithm Lab": "Available ✅",
+    "Systems Lab": "Held by Navomy 🔑",
+    "Hi-Tech Lab": "Available ✅",
+    "Research Lab": "Available ✅"
+}
+
 def get_db_connection():
+    """Kept for future Aiven fix; logic falls back if connection fails"""
     try:
         return mysql.connector.connect(
             host=os.getenv("DB_HOST"),
@@ -32,48 +40,52 @@ def whatsapp_reply():
     
     resp = MessagingResponse()
     
-    # 1. IDENTIFY USER (Fallback Mode)
+    # 1. USER IDENTIFICATION
+    # NOTE: Replace the second number with Navomy's real number for the demo
     demo_users = {
         "917593998816": {"name": "Nandana"},
-        "91XXXXXXXXXX": {"name": "Navomy"} # Add Navomy's real number here
+        "91XXXXXXXXXX": {"name": "Navomy"} 
     }
     user = demo_users.get(from_number)
 
     if not user:
-        resp.message(f"Hello! Number ({from_number}) not recognized.")
+        resp.message(f"Hello! Number {from_number} is not registered.")
         return str(resp)
 
-    # 2. CHECK FOR PENDING TRANSFER REQUESTS
-    # If someone requested a key FROM this user, they need to 'Yes' or 'No'
+    # 2. TRANSFER ACCEPTANCE LOGIC
     if from_number in pending_requests and incoming_msg in ['yes', 'no']:
-        requester_name = pending_requests[from_number]['requester_name']
+        req_data = pending_requests[from_number]
         if incoming_msg == 'yes':
-            resp.message(f"✅ Transfer Confirmed! You have handed over the key to {requester_name}.")
-            # Here you would normally update the SQL database
+            resp.message(f"✅ Transfer Confirmed! You have handed over the {req_data['lab']} key to {req_data['requester_name']}.")
         else:
-            resp.message(f"❌ Transfer Cancelled. You still have the key.")
+            resp.message(f"❌ Transfer Declined. You still hold the {req_data['lab']} key.")
         
-        del pending_requests[from_number] # Clear the request
+        del pending_requests[from_number]
         return str(resp)
 
-    # 3. GENERAL MENU LOGIC
-    if incoming_msg in ['hi', 'hello']:
-        resp.message(f"Welcome {user['name']}! 🔬\n1. Check Lab Status\n2. Request Key Transfer")
+    # 3. MAIN MENU LOGIC
+    if incoming_msg in ['hi', 'hello', 'hey']:
+        resp.message(f"Welcome {user['name']}! 🔬\n\n1. Check Lab Status\n2. Request Key Transfer")
 
     elif incoming_msg == '1':
-        resp.message("📍 Lab Status:\nAlgorithm: Available ✅\nSystems: Held by Navomy 🔑")
+        status_text = "📍 *Current Lab Status:*\n"
+        for lab, status in lab_status.items():
+            status_text += f"• {lab}: {status}\n"
+        resp.message(status_text)
 
     elif incoming_msg == '2':
-        # Logic to start a transfer
-        # Example: Nandana wants to take the key from Navomy
-        target_number = "91XXXXXXXXXX" # Navomy's Number
-        pending_requests[target_number] = {'requester_name': user['name']}
+        # Simulated target for the demo (Navomy)
+        target_number = "91XXXXXXXXXX" 
         
-        resp.message(f"⏳ Request sent to Navomy. Please wait for her to reply 'YES' to confirm.")
-        # Note: In a real app, you would use twilio_client.messages.create to notify Navomy
+        pending_requests[target_number] = {
+            'requester_name': user['name'],
+            'lab': "Systems Lab"
+        }
         
+        resp.message(f"⏳ Request sent to Navomy for the *Systems Lab* key.\n\nAsk her to reply 'YES' to this bot to confirm.")
+
     else:
-        resp.message("Please reply with '1' or '2'. If you have a pending request, reply 'YES' or 'NO'.")
+        resp.message("Please reply with '1' or '2'.\n(If you are confirming a transfer, reply 'YES')")
         
     return str(resp)
 
