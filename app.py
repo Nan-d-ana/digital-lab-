@@ -33,6 +33,15 @@ def get_db_connection():
     except Exception as e:
         print(f"❌ DATABASE CONNECTION FAILED: {e}")
         raise e
+@app.route("/test-db")
+def test_db():
+    try:
+        conn = get_db_connection()
+        if conn.is_connected():
+            conn.close()
+            return "✅ Database Connection Successful!", 200
+    except Exception as e:
+        return f"❌ Database Connection Failed: {str(e)}", 500        
 
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp_reply():
