@@ -17,16 +17,22 @@ twilio_number = os.getenv("TWILIO_WHATSAPP_NUMBER")
 user_sessions = {}
 
 def get_db_connection():
-    return mysql.connector.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        database=os.getenv("DB_NAME"),
-        port=int(os.getenv("DB_PORT", 16690)),
-        ssl_ca="ca.pem",
-        ssl_verify_cert=True,
-        connect_timeout=15
-    )
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("DB_HOST"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME"),
+            port=int(os.getenv("DB_PORT", 16690)),
+            ssl_ca="ca.pem",
+            ssl_verify_cert=True,
+            connect_timeout=10 # Reduced to 10s for faster testing
+        )
+        print("✅ DATABASE CONNECTED SUCCESSFULLY")
+        return conn
+    except Exception as e:
+        print(f"❌ DATABASE CONNECTION FAILED: {e}")
+        raise e
 
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp_reply():
