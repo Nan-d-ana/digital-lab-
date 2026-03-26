@@ -51,17 +51,17 @@ def whatsapp_reply():
             resp.message("Registration Error: Your number is not recognized in the system.")
             return str(resp)
 
-        # 2. THE HANDSHAKE: PROCESSING "YES" APPROVAL
         if incoming_msg == "yes":
-            # Fetch the most recent pending request where this user is the owner
+            # Removed t.id and t.request_time because they don't exist in your DB
             cursor.execute("""
-                SELECT t.id, t.lab_id, t.requester_id, l.lab_name 
+                SELECT t.lab_id, t.requester_id, l.lab_name 
                 FROM transfer_requests t
                 JOIN lab_keys l ON t.lab_id = l.rfid_tag
                 WHERE t.owner_id = %s AND t.status = 'pending'
-                ORDER BY t.request_time DESC LIMIT 1
+                LIMIT 1
             """, (user['barcode_id'],))
             pending = cursor.fetchone()
+        
             
             if pending:
                 try:
