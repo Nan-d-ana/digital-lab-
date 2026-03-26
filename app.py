@@ -51,12 +51,13 @@ def whatsapp_reply():
             resp.message("Registration Error: Your number is not recognized in the system.")
             return str(resp)
 
-        # 2. THE HANDSHAKE (APPROVE TRANSFER)
+      # 2. THE HANDSHAKE (APPROVE TRANSFER)
         if incoming_msg == "yes":
             cursor.execute("""
-                SELECT t.lab_id, t.requester_id, l.lab_name 
+                SELECT t.lab_id, t.requester_id, l.lab_name, u.name as requester_name 
                 FROM transfer_requests t
                 JOIN lab_keys l ON t.lab_id = l.rfid_tag
+                JOIN users u ON t.requester_id = u.barcode_id
                 WHERE t.owner_id = %s AND t.status = 'pending'
                 LIMIT 1
             """, (user['barcode_id'],))
@@ -64,37 +65,19 @@ def whatsapp_reply():
         
             if pending:
                 try:
-                    # Step A: Close the current owner's log
-                    cursor.execute("""
-                        UPDATE key_logs 
-                        SET return_time = NOW() 
-                        WHERE user_id = %s AND lab_id = %s AND return_time IS NULL
-                    """, (user['barcode_id'], pending['lab_id']))
-                    
-                    # Step B: Create a new log for the requester
-                    cursor.execute("""
-                        INSERT INTO key_logs (user_id, lab_id, issue_time) 
-                        VALUES (%s, %s, NOW())
-                    """, (pending['requester_id'], pending['lab_id']))
-                    
-                    # Step C: Mark request approved
-                    cursor.execute("""
-                        UPDATE transfer_requests 
-                        SET status = 'approved' 
-                        WHERE owner_id = %s AND lab_id = %s AND status = 'pending'
-                        LIMIT 1
-                    """, (user['barcode_id'], pending['lab_id']))
-                    
+                    cursor.execute("UPDATE key_logs SET return_time = NOW() WHERE user_id = %s AND lab_id = %s AND return_time IS NULL", (user['barcode_id'], pending['lab_id']))
+                    cursor.execute("INSERT INTO key_logs (user_id, lab_id, issue_time) VALUES (%s, %s, NOW())", (pending['requester_id'], pending['lab_id']))
+                    cursor.execute("UPDATE transfer_requests SET status = 'approved' WHERE owner_id = %s AND lab_id = %s AND status = 'pending' LIMIT 1", (user['barcode_id'], pending['lab_id']))
                     db.commit()
-                    resp.message(f"✅ Success! The {pending['lab_name']} key has been transferred.")
+                    
+                    # Professional success message
+                    resp.message(f"🤝 *Transfer Complete!*\nYou have successfully handed over the *{pending['lab_name']}* key to *{pending['requester_name']}*.\n\nYour responsibility for this key has ended.")
                 except Exception as inner_e:
                     db.rollback()
-                    print(f"🔥 Transfer Transaction Failed: {inner_e}")
                     resp.message("⚠️ Transfer failed during database update.")
             else:
                 resp.message("No pending transfer requests found for you.")
             return str(resp)
-
         # 3. MAIN MENU
         if incoming_msg in ['hi', 'hello', 'menu']:
             resp.message(f"Welcome {user['name']}!\n\n*Reply with:*\n*1* - Check Lab Status\n*2* - Request Key Transfer")
@@ -133,22 +116,32 @@ def whatsapp_reply():
         lab_map_1 = {chr(97+i): l for i, l in enumerate(all_labs)}
         lab_map_2 = {f"2{chr(97+i)}": l for i, l in enumerate(all_labs)}
 
+        # --- OPTION 1: STATUS CHECK ---
         if incoming_msg in lab_map_1:
             selected = lab_map_1[incoming_msg]
             cursor.execute("""
-                SELECT u.name, k.issue_time FROM key_logs k
+                SELECT u.name, u.semester, u.department, k.issue_time 
+                FROM key_logs k
                 JOIN users u ON k.user_id = u.barcode_id
                 WHERE k.lab_id = %s AND k.return_time IS NULL
             """, (selected['rfid_tag'],))
             h = cursor.fetchone()
-            msg = f"📍 {selected['lab_name']}\nHolder: {h['name']}\nSince: {h['issue_time']}" if h else f"✅ {selected['lab_name']} is in the office."
+            
+            if h:
+                msg = (f"📍 *{selected['lab_name']}*\n"
+                       f"👤 *Holder:* {h['name']}\n"
+                       f"🎓 *Sem/Dept:* {h['semester']} - {h['department']}\n"
+                       f"⏰ *Since:* {h['issue_time']}")
+            else:
+                msg = f"✅ *{selected['lab_name']}* is currently in the office."
             resp.message(msg)
             return str(resp)
 
+        # --- OPTION 2: TRANSFER REQUEST ---
         if incoming_msg in lab_map_2:
             selected = lab_map_2[incoming_msg]
             cursor.execute("""
-                SELECT u.barcode_id, u.phone_number, u.name 
+                SELECT u.barcode_id, u.phone_number, u.name, u.semester, u.department 
                 FROM key_logs k
                 JOIN users u ON k.user_id = u.barcode_id
                 WHERE k.lab_id = %s AND k.return_time IS NULL
@@ -160,16 +153,21 @@ def whatsapp_reply():
                     resp.message("You already have this key!")
                     return str(resp)
 
+                # Log the transfer request in DB
                 cursor.execute("""
                     INSERT INTO transfer_requests (lab_id, requester_id, owner_id, status) 
                     VALUES (%s, %s, %s, 'pending')
                 """, (selected['rfid_tag'], user['barcode_id'], h['barcode_id']))
                 db.commit()
 
+                # Send Request to current holder with requester's details
                 try:
                     twilio_client.messages.create(
                         from_=f"whatsapp:{twilio_number}",
-                        body=f"🔔 *Key Request*\n{user['name']} wants the {selected['lab_name']} key. Reply *YES* to approve.",
+                        body=(f"🔔 *KEY TRANSFER REQUEST*\n\n"
+                              f"{user['name']} wants the *{selected['lab_name']}* key.\n"
+                              f"🎓 *Requester:* {user['semester']} Sem, {user['department']}\n\n"
+                              f"Reply *YES* to approve the transfer."),
                         to=f"whatsapp:{h['phone_number']}"
                     )
                     resp.message(f"⏳ Request sent! Please wait for {h['name']} to approve.")
@@ -178,7 +176,6 @@ def whatsapp_reply():
             else:
                 resp.message(f"The {selected['lab_name']} key is already in the office.")
             return str(resp)
-
         # 6. CATCH-ALL DEFAULT REPLY
         resp.message(
             f"Hello {user['name']}! I didn't quite catch that.\n\n"
