@@ -62,7 +62,9 @@ def whatsapp_reply():
             """, (user['barcode_id'],))
             pending = cursor.fetchone()
         
-            if pending:
+           # Line 65
+        if pending:
+            # Line 66 (Indented 4 spaces)
             try:
                 # Step A: Close the current owner's log
                 cursor.execute("""
@@ -78,7 +80,7 @@ def whatsapp_reply():
                 """, (pending['requester_id'], pending['lab_id']))
                 
                 # Step C: Mark the transfer request as approved
-                # FIXED: We use owner_id and lab_id because your table has no 'id' column
+                # Using owner_id and lab_id because 'id' column is missing in your DB
                 cursor.execute("""
                     UPDATE transfer_requests 
                     SET status = 'approved' 
@@ -87,12 +89,13 @@ def whatsapp_reply():
                 """, (user['barcode_id'], pending['lab_id']))
                 
                 db.commit()
-                resp.message(f"✅ Success! You have transferred the {pending['lab_name']} key.")
+                resp.message(f"✅ Success! The {pending['lab_name']} key has been transferred.")
             except Exception as inner_e:
                 db.rollback()
                 print(f"🔥 Transfer Transaction Failed: {inner_e}")
                 resp.message("⚠️ Transfer failed during database update. Please try again.")
-
+        else:
+            resp.message("No pending transfer requests found for you.")
         # 3. MAIN MENU
         if incoming_msg in ['hi', 'hello', 'menu']:
             resp.message(f"Welcome {user['name']}!\n\nReply with:\n*1* - Check Lab Status\n*2* - Request Key Transfer")
