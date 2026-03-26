@@ -30,8 +30,8 @@ def get_db_connection():
 
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp_reply():
+    # .lower() ensures "YES", "Yes", and "yes" are all treated the same
     incoming_msg = request.values.get('Body', '').strip().lower()
-    # Standardize phone number format
     from_number = request.values.get('From', '').replace('whatsapp:', '').replace('+', '')
     
     resp = MessagingResponse()
@@ -44,7 +44,7 @@ def whatsapp_reply():
     try:
         cursor = db.cursor(dictionary=True)
 
-        # 1. IDENTIFY THE USER SENDING THE MESSAGE
+        # 1. IDENTIFY THE USER
         cursor.execute("SELECT * FROM users WHERE phone_number = %s", (from_number,))
         user = cursor.fetchone()
         if not user:
@@ -53,7 +53,6 @@ def whatsapp_reply():
 
         # 2. THE HANDSHAKE (APPROVE TRANSFER)
         if incoming_msg == "yes":
-            # The variable 'pending' is only created IF the message is "yes"
             cursor.execute("""
                 SELECT t.lab_id, t.requester_id, l.lab_name 
                 FROM transfer_requests t
@@ -63,12 +62,29 @@ def whatsapp_reply():
             """, (user['barcode_id'],))
             pending = cursor.fetchone()
         
-            # This check MUST stay inside the "if incoming_msg == 'yes'" block
             if pending:
                 try:
-                    cursor.execute("UPDATE key_logs SET return_time = NOW() WHERE user_id = %s AND lab_id = %s AND return_time IS NULL", (user['barcode_id'], pending['lab_id']))
-                    cursor.execute("INSERT INTO key_logs (user_id, lab_id, issue_time) VALUES (%s, %s, NOW())", (pending['requester_id'], pending['lab_id']))
-                    cursor.execute("UPDATE transfer_requests SET status = 'approved' WHERE owner_id = %s AND lab_id = %s AND status = 'pending' LIMIT 1", (user['barcode_id'], pending['lab_id']))
+                    # Step A: Close the current owner's log
+                    cursor.execute("""
+                        UPDATE key_logs 
+                        SET return_time = NOW() 
+                        WHERE user_id = %s AND lab_id = %s AND return_time IS NULL
+                    """, (user['barcode_id'], pending['lab_id']))
+                    
+                    # Step B: Create a new log for the requester
+                    cursor.execute("""
+                        INSERT INTO key_logs (user_id, lab_id, issue_time) 
+                        VALUES (%s, %s, NOW())
+                    """, (pending['requester_id'], pending['lab_id']))
+                    
+                    # Step C: Mark request approved
+                    cursor.execute("""
+                        UPDATE transfer_requests 
+                        SET status = 'approved' 
+                        WHERE owner_id = %s AND lab_id = %s AND status = 'pending'
+                        LIMIT 1
+                    """, (user['barcode_id'], pending['lab_id']))
+                    
                     db.commit()
                     resp.message(f"✅ Success! The {pending['lab_name']} key has been transferred.")
                 except Exception as inner_e:
@@ -77,66 +93,100 @@ def whatsapp_reply():
                     resp.message("⚠️ Transfer failed during database update.")
             else:
                 resp.message("No pending transfer requests found for you.")
-            
-            # Use return to stop the function here and send the response
             return str(resp)
-        # 5. PROCESS SELECTION (e.g., 1a, 2a)
-        if len(incoming_msg) == 2 and incoming_msg[0] in ['1', '2']:
-            mode = 'status' if incoming_msg[0] == '1' else 'transfer'
-            idx = ord(incoming_msg[1]) - 97
-            
-            cursor.execute("SELECT * FROM lab_keys")
+
+        # 3. MAIN MENU
+        if incoming_msg in ['hi', 'hello', 'menu']:
+            resp.message(f"Welcome {user['name']}!\n\n*Reply with:*\n*1* - Check Lab Status\n*2* - Request Key Transfer")
+            return str(resp)
+
+        # 4. SUB-MENUS
+        if incoming_msg == '1':
+            cursor.execute("SELECT lab_name FROM lab_keys")
             labs = cursor.fetchall()
+            menu = "*Check Lab Status*\nWhich lab status you want to check?\n\n"
+            for i, l in enumerate(labs):
+                menu += f"*{chr(97+i)}.* {l['lab_name']}\n"
+            resp.message(menu)
+            return str(resp)
+
+        if incoming_msg == '2':
+            cursor.execute("""
+                SELECT l.lab_name 
+                FROM lab_keys l
+                JOIN key_logs k ON l.rfid_tag = k.lab_id
+                WHERE k.return_time IS NULL
+            """)
+            labs = cursor.fetchall()
+            if not labs:
+                resp.message("All keys are currently in the office.")
+            else:
+                menu = "*Access Lab Key*\nWhich lab key you want to access?\n\n"
+                for i, l in enumerate(labs):
+                    menu += f"*2{chr(97+i)}.* {l['lab_name']}\n"
+                resp.message(menu)
+            return str(resp)
+
+        # 5. PROCESS SELECTION (Option 1: a, b... OR Option 2: 2a, 2b...)
+        cursor.execute("SELECT rfid_tag, lab_name FROM lab_keys")
+        all_labs = cursor.fetchall()
+        lab_map_1 = {chr(97+i): l for i, l in enumerate(all_labs)}
+        lab_map_2 = {f"2{chr(97+i)}": l for i, l in enumerate(all_labs)}
+
+        if incoming_msg in lab_map_1:
+            selected = lab_map_1[incoming_msg]
+            cursor.execute("""
+                SELECT u.name, k.issue_time FROM key_logs k
+                JOIN users u ON k.user_id = u.barcode_id
+                WHERE k.lab_id = %s AND k.return_time IS NULL
+            """, (selected['rfid_tag'],))
+            h = cursor.fetchone()
+            msg = f"📍 {selected['lab_name']}\nHolder: {h['name']}\nSince: {h['issue_time']}" if h else f"✅ {selected['lab_name']} is in the office."
+            resp.message(msg)
+            return str(resp)
+
+        if incoming_msg in lab_map_2:
+            selected = lab_map_2[incoming_msg]
+            cursor.execute("""
+                SELECT u.barcode_id, u.phone_number, u.name 
+                FROM key_logs k
+                JOIN users u ON k.user_id = u.barcode_id
+                WHERE k.lab_id = %s AND k.return_time IS NULL
+            """, (selected['rfid_tag'],))
+            h = cursor.fetchone()
             
-            if 0 <= idx < len(labs):
-                selected = labs[idx]
-                if mode == 'status':
-                    cursor.execute("""
-                        SELECT u.name, k.issue_time FROM key_logs k
-                        JOIN users u ON k.user_id = u.barcode_id
-                        WHERE k.lab_id = %s AND k.return_time IS NULL
-                    """, (selected['rfid_tag'],))
-                    h = cursor.fetchone()
-                    msg = f"📍 {selected['lab_name']}\nHolder: {h['name']}\nSince: {h['issue_time']}" if h else f"✅ {selected['lab_name']} is in the office."
-                    resp.message(msg)
-                else:
-                    # Initiate Transfer Request
-                    cursor.execute("""
-                        SELECT u.barcode_id, u.phone_number, u.name 
-                        FROM key_logs k
-                        JOIN users u ON k.user_id = u.barcode_id
-                        WHERE k.lab_id = %s AND k.return_time IS NULL
-                    """, (selected['rfid_tag'],))
-                    h = cursor.fetchone()
-                    
-                    if h:
-                        # Ensure we don't request our own key
-                        if h['barcode_id'] == user['barcode_id']:
-                            resp.message("You already have this key!")
-                            return str(resp)
+            if h:
+                if h['barcode_id'] == user['barcode_id']:
+                    resp.message("You already have this key!")
+                    return str(resp)
 
-                        cursor.execute("""
-                            INSERT INTO transfer_requests (lab_id, requester_id, owner_id, status) 
-                            VALUES (%s, %s, %s, 'pending')
-                        """, (selected['rfid_tag'], user['barcode_id'], h['barcode_id']))
-                        db.commit()
+                cursor.execute("""
+                    INSERT INTO transfer_requests (lab_id, requester_id, owner_id, status) 
+                    VALUES (%s, %s, %s, 'pending')
+                """, (selected['rfid_tag'], user['barcode_id'], h['barcode_id']))
+                db.commit()
 
-                        # Outgoing notification to the owner
-                        try:
-                            twilio_client.messages.create(
-                                from_=f"whatsapp:{twilio_number}",
-                                body=f"🔔 *Key Request*\n{user['name']} wants the {selected['lab_name']} key. Reply *YES* to approve.",
-                                to=f"whatsapp:{h['phone_number']}"
-                            )
-                            resp.message(f"⏳ Request sent! Please wait for {h['name']} to approve.")
-                        except Exception as t_err:
-                            print(f"Twilio Error: {t_err}")
-                            resp.message(f"⏳ Request logged, but I couldn't text {h['name']}. Please tell them to reply 'YES'.")
-                    else:
-                        resp.message(f"The {selected['lab_name']} key is already in the office.")
-                return str(resp)
+                try:
+                    twilio_client.messages.create(
+                        from_=f"whatsapp:{twilio_number}",
+                        body=f"🔔 *Key Request*\n{user['name']} wants the {selected['lab_name']} key. Reply *YES* to approve.",
+                        to=f"whatsapp:{h['phone_number']}"
+                    )
+                    resp.message(f"⏳ Request sent! Please wait for {h['name']} to approve.")
+                except:
+                    resp.message(f"⏳ Request logged. Ask {h['name']} to reply 'YES'.")
+            else:
+                resp.message(f"The {selected['lab_name']} key is already in the office.")
+            return str(resp)
 
-        resp.message("Unknown command. Send 'Hi' for the menu.")
+        # 6. CATCH-ALL DEFAULT REPLY
+        resp.message(
+            f"Hello {user['name']}! I didn't quite catch that.\n\n"
+            "*Please reply with:*\n"
+            "*1* - Check Lab Status\n"
+            "*2* - Request Key Transfer\n\n"
+            "_Or send 'Hi' to see this menu again._"
+        )
 
     except Exception as e:
         print(f"🔥 Application Error: {e}")
