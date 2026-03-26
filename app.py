@@ -62,34 +62,36 @@ def whatsapp_reply():
             """, (user['barcode_id'],))
             pending = cursor.fetchone()
         
-            
             if pending:
-                try:
-                    # Step A: Close the current owner's log
-                    cursor.execute("""
-                        UPDATE key_logs 
-                        SET return_time = NOW() 
-                        WHERE user_id = %s AND lab_id = %s AND return_time IS NULL
-                    """, (user['barcode_id'], pending['lab_id']))
-                    
-                    # Step B: Create a new log for the requester
-                    cursor.execute("""
-                        INSERT INTO key_logs (user_id, lab_id, issue_time) 
-                        VALUES (%s, %s, NOW())
-                    """, (pending['requester_id'], pending['lab_id']))
-                    
-                    # Step C: Mark the transfer request as approved
-                    cursor.execute("UPDATE transfer_requests SET status = 'approved' WHERE id = %s", (pending['id'],))
-                    
-                    db.commit()
-                    resp.message(f"✅ Success! You have transferred the {pending['lab_name']} key.")
-                except Exception as inner_e:
-                    db.rollback()
-                    print(f"🔥 Transfer Transaction Failed: {inner_e}")
-                    resp.message("⚠️ Transfer failed during database update. Please try again.")
-            else:
-                resp.message("You don't have any pending key transfer requests to approve.")
-            return str(resp)
+            try:
+                # Step A: Close the current owner's log
+                cursor.execute("""
+                    UPDATE key_logs 
+                    SET return_time = NOW() 
+                    WHERE user_id = %s AND lab_id = %s AND return_time IS NULL
+                """, (user['barcode_id'], pending['lab_id']))
+                
+                # Step B: Create a new log for the requester
+                cursor.execute("""
+                    INSERT INTO key_logs (user_id, lab_id, issue_time) 
+                    VALUES (%s, %s, NOW())
+                """, (pending['requester_id'], pending['lab_id']))
+                
+                # Step C: Mark the transfer request as approved
+                # FIXED: We use owner_id and lab_id because your table has no 'id' column
+                cursor.execute("""
+                    UPDATE transfer_requests 
+                    SET status = 'approved' 
+                    WHERE owner_id = %s AND lab_id = %s AND status = 'pending'
+                    LIMIT 1
+                """, (user['barcode_id'], pending['lab_id']))
+                
+                db.commit()
+                resp.message(f"✅ Success! You have transferred the {pending['lab_name']} key.")
+            except Exception as inner_e:
+                db.rollback()
+                print(f"🔥 Transfer Transaction Failed: {inner_e}")
+                resp.message("⚠️ Transfer failed during database update. Please try again.")
 
         # 3. MAIN MENU
         if incoming_msg in ['hi', 'hello', 'menu']:
