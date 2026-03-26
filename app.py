@@ -51,8 +51,9 @@ def whatsapp_reply():
             resp.message("Registration Error: Your number is not recognized in the system.")
             return str(resp)
 
+        # 2. THE HANDSHAKE (APPROVE TRANSFER)
         if incoming_msg == "yes":
-            # Removed t.id and t.request_time because they don't exist in your DB
+            # The variable 'pending' is only created IF the message is "yes"
             cursor.execute("""
                 SELECT t.lab_id, t.requester_id, l.lab_name 
                 FROM transfer_requests t
@@ -62,56 +63,23 @@ def whatsapp_reply():
             """, (user['barcode_id'],))
             pending = cursor.fetchone()
         
-           # Line 65
-        if pending:
-            # Line 66 (Indented 4 spaces)
-            try:
-                # Step A: Close the current owner's log
-                cursor.execute("""
-                    UPDATE key_logs 
-                    SET return_time = NOW() 
-                    WHERE user_id = %s AND lab_id = %s AND return_time IS NULL
-                """, (user['barcode_id'], pending['lab_id']))
-                
-                # Step B: Create a new log for the requester
-                cursor.execute("""
-                    INSERT INTO key_logs (user_id, lab_id, issue_time) 
-                    VALUES (%s, %s, NOW())
-                """, (pending['requester_id'], pending['lab_id']))
-                
-                # Step C: Mark the transfer request as approved
-                # Using owner_id and lab_id because 'id' column is missing in your DB
-                cursor.execute("""
-                    UPDATE transfer_requests 
-                    SET status = 'approved' 
-                    WHERE owner_id = %s AND lab_id = %s AND status = 'pending'
-                    LIMIT 1
-                """, (user['barcode_id'], pending['lab_id']))
-                
-                db.commit()
-                resp.message(f"✅ Success! The {pending['lab_name']} key has been transferred.")
-            except Exception as inner_e:
-                db.rollback()
-                print(f"🔥 Transfer Transaction Failed: {inner_e}")
-                resp.message("⚠️ Transfer failed during database update. Please try again.")
-        else:
-            resp.message("No pending transfer requests found for you.")
-        # 3. MAIN MENU
-        if incoming_msg in ['hi', 'hello', 'menu']:
-            resp.message(f"Welcome {user['name']}!\n\nReply with:\n*1* - Check Lab Status\n*2* - Request Key Transfer")
+            # This check MUST stay inside the "if incoming_msg == 'yes'" block
+            if pending:
+                try:
+                    cursor.execute("UPDATE key_logs SET return_time = NOW() WHERE user_id = %s AND lab_id = %s AND return_time IS NULL", (user['barcode_id'], pending['lab_id']))
+                    cursor.execute("INSERT INTO key_logs (user_id, lab_id, issue_time) VALUES (%s, %s, NOW())", (pending['requester_id'], pending['lab_id']))
+                    cursor.execute("UPDATE transfer_requests SET status = 'approved' WHERE owner_id = %s AND lab_id = %s AND status = 'pending' LIMIT 1", (user['barcode_id'], pending['lab_id']))
+                    db.commit()
+                    resp.message(f"✅ Success! The {pending['lab_name']} key has been transferred.")
+                except Exception as inner_e:
+                    db.rollback()
+                    print(f"🔥 Transfer Transaction Failed: {inner_e}")
+                    resp.message("⚠️ Transfer failed during database update.")
+            else:
+                resp.message("No pending transfer requests found for you.")
+            
+            # Use return to stop the function here and send the response
             return str(resp)
-
-        # 4. SHOW LAB OPTIONS
-        if incoming_msg == '1' or incoming_msg == '2':
-            action = "Check" if incoming_msg == '1' else "Transfer"
-            cursor.execute("SELECT lab_name FROM lab_keys")
-            labs = cursor.fetchall()
-            menu = f"*{action} Key*\nSelect a lab:\n"
-            for i, l in enumerate(labs):
-                menu += f"*{incoming_msg}{chr(97+i)}.* {l['lab_name']}\n"
-            resp.message(menu)
-            return str(resp)
-
         # 5. PROCESS SELECTION (e.g., 1a, 2a)
         if len(incoming_msg) == 2 and incoming_msg[0] in ['1', '2']:
             mode = 'status' if incoming_msg[0] == '1' else 'transfer'
