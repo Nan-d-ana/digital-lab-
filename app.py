@@ -91,6 +91,48 @@ def whatsapp_reply():
             else:
                 resp.message("No pending requests found.")
             return str(resp)
+        # --- THE HANDSHAKE (DECLINE TRANSFER) ---
+        if incoming_msg == "no":
+            cursor.execute("""
+                SELECT t.lab_id, t.requester_id, l.lab_name, u.name as requester_name,
+                       u.phone_number as requester_phone 
+                FROM transfer_requests t
+                JOIN lab_keys l ON t.lab_id = l.rfid_tag
+                JOIN users u ON t.requester_id = u.barcode_id
+                WHERE t.owner_id = %s AND t.status = 'pending'
+                LIMIT 1
+            """, (user['barcode_id'],))
+            pending = cursor.fetchone()
+
+            if pending:
+                try:
+                    # Update the status to 'rejected'
+                    cursor.execute("""
+                        UPDATE transfer_requests 
+                        SET status = 'rejected' 
+                        WHERE owner_id = %s AND lab_id = %s AND status = 'pending'
+                    """, (user['barcode_id'], pending['lab_id']))
+                    db.commit()
+
+                    # Notify the requester that they were rejected
+                    try:
+                        twilio_client.messages.create(
+                            from_=f"whatsapp:{twilio_number}",
+                            body=(f"❌ *TRANSFER DECLINED*\n\n"
+                                  f"Hello *{pending['requester_name']}*,\n"
+                                  f"*{user['name']}* has declined your request for the *{pending['lab_name']}* key."),
+                            to=f"whatsapp:{pending['requester_phone']}"
+                        )
+                    except Exception as e:
+                        print(f"🔥 Twilio Notify Error: {e}")
+
+                    resp.message(f"🚫 *Request Rejected*\nYou have declined the transfer for the *{pending['lab_name']}* key.")
+                except Exception as e:
+                    db.rollback()
+                    resp.message("⚠️ Database update failed.")
+            else:
+                resp.message("No pending requests found to reject.")
+            return str(resp)    
 
         # --- 2. MAIN MENU ---
         if incoming_msg in ['hi', 'hello', 'menu']:
